@@ -10,6 +10,9 @@ pub struct Config {
     pub autosave_secs: f32,
     #[serde(default)]
     pub last_page: Option<String>,
+    /// True once the first-run tour has been finished or skipped.
+    #[serde(default)]
+    pub intro_done: bool,
 }
 
 fn default_autosave() -> f32 {
@@ -19,7 +22,7 @@ fn default_autosave() -> f32 {
 impl Default for Config {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        Config { wiki_root: home.join("wiki"), autosave_secs: default_autosave(), last_page: None }
+        Config { wiki_root: home.join("wiki"), autosave_secs: default_autosave(), last_page: None, intro_done: false }
     }
 }
 

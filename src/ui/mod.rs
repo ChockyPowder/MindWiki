@@ -3,6 +3,7 @@
 pub mod preview;
 mod search;
 mod sidebar;
+mod tour;
 
 use crate::app::{Dialog, Mode, WikiApp};
 use egui::{CentralPanel, Panel, RichText};
@@ -19,6 +20,7 @@ impl eframe::App for WikiApp {
         CentralPanel::default_margins().show(ui, |ui| self.central(ui));
         self.search_window(&ctx);
         self.dialogs(&ctx);
+        self.tour_window(&ctx);
 
         self.autosave(&ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -45,6 +47,9 @@ impl WikiApp {
                     ui.heading(format!("{t}{mark}"));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("?").on_hover_text("Show the intro tour").clicked() {
+                        self.start_tour();
+                    }
                     if ui.button("⚙").on_hover_text("Settings").clicked() {
                         self.dialog = Dialog::Settings {
                             root: self.config.wiki_root.display().to_string(),

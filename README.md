@@ -13,6 +13,7 @@ cargo run --release -- ~/notes # use another folder
 
 ## Features
 
+- **Intro tour** on first open that walks through the app (replay it with **?**)
 - **Edit / Split / Preview** modes with rendered Markdown
 - **Wiki links**: `[[Page]]` or `[[Page|shown text]]`. Clicking a link to a page
   that doesn't exist yet (marked *(new)*) creates it.

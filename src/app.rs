@@ -51,6 +51,8 @@ pub struct WikiApp {
     pub md_cache: CommonMarkCache,
     pub dialog: Dialog,
     pub status: Option<(String, f64)>,
+    /// Current step of the intro tour, if it is showing.
+    pub tour: Option<usize>,
 
     _watcher: Option<RecommendedWatcher>,
     rx: Receiver<PathBuf>,
@@ -76,6 +78,7 @@ impl WikiApp {
             search_focus: false,
             query: String::new(),
             search_sel: 0,
+            tour: None,
             md_cache: CommonMarkCache::default(),
             dialog: Dialog::None,
             status: None,
@@ -83,6 +86,9 @@ impl WikiApp {
             rx,
         };
         app.load_wiki(ctx);
+        if !app.config.intro_done {
+            app.start_tour();
+        }
         app
     }
 

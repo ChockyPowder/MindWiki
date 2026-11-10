@@ -18,6 +18,15 @@ pub enum Mode {
     Preview,
 }
 
+#[derive(Default)]
+pub struct Rects {
+    pub sidebar: Option<egui::Rect>,
+    pub modes: Option<egui::Rect>,
+    pub search: Option<egui::Rect>,
+    pub central: Option<egui::Rect>,
+    pub backlinks: Option<egui::Rect>,
+}
+
 pub enum Dialog {
     None,
     NewPage(String),
@@ -53,6 +62,13 @@ pub struct WikiApp {
     pub status: Option<(String, f64)>,
     /// Current step of the intro tour, if it is showing.
     pub tour: Option<usize>,
+    /// When the tour step last changed (for its fade).
+    pub tour_changed_at: f64,
+    /// When the page or view mode last changed (for the fade-in).
+    pub view_changed_at: f64,
+    pub sidebar_open: bool,
+    /// Where parts of the UI were drawn last frame; the tour highlights them.
+    pub rects: Rects,
 
     _watcher: Option<RecommendedWatcher>,
     rx: Receiver<PathBuf>,
@@ -60,6 +76,7 @@ pub struct WikiApp {
 
 impl WikiApp {
     pub fn new(ctx: &egui::Context, config: Config) -> Self {
+        crate::ui::theme::apply(ctx, config.dark_mode);
         let (watcher, rx) = start_watcher(&config.wiki_root, ctx.clone());
         let mut app = WikiApp {
             wiki: Wiki { root: config.wiki_root.clone(), pages: BTreeMap::new() },
@@ -79,6 +96,10 @@ impl WikiApp {
             query: String::new(),
             search_sel: 0,
             tour: None,
+            tour_changed_at: 0.0,
+            view_changed_at: 0.0,
+            sidebar_open: true,
+            rects: Rects::default(),
             md_cache: CommonMarkCache::default(),
             dialog: Dialog::None,
             status: None,
@@ -192,6 +213,7 @@ impl WikiApp {
         self.current = Some(page.title.clone());
         self.buffer = page.body.clone();
         self.dirty = false;
+        self.view_changed_at = ctx.input(|i| i.time);
         self.config.last_page = self.current.clone();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} — mindwiki", page.title)));
         true
@@ -288,7 +310,7 @@ impl WikiApp {
     /// Global keyboard shortcuts. Runs before widgets so they can't eat the keys.
     pub fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
-        let (new, save, search, toggle, back, fwd) = ctx.input_mut(|i| {
+        let (new, save, search, toggle, back, fwd, side) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::N),
                 i.consume_key(Modifiers::COMMAND, Key::S),
@@ -296,6 +318,7 @@ impl WikiApp {
                 i.consume_key(Modifiers::COMMAND, Key::E),
                 i.consume_key(Modifiers::ALT, Key::ArrowLeft),
                 i.consume_key(Modifiers::ALT, Key::ArrowRight),
+                i.consume_key(Modifiers::COMMAND, Key::B),
             )
         });
         if new {
@@ -312,7 +335,11 @@ impl WikiApp {
             self.search_open = true;
             self.search_focus = true;
         }
+        if side {
+            self.sidebar_open = !self.sidebar_open;
+        }
         if toggle {
+            self.view_changed_at = ctx.input(|i| i.time);
             self.mode = if self.mode == Mode::Edit { Mode::Preview } else { Mode::Edit };
         }
         if back {

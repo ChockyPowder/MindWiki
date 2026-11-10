@@ -13,6 +13,9 @@ pub struct Config {
     /// True once the first-run tour has been finished or skipped.
     #[serde(default)]
     pub intro_done: bool,
+    /// Some(true) = dark, Some(false) = light, None = follow the system.
+    #[serde(default)]
+    pub dark_mode: Option<bool>,
 }
 
 fn default_autosave() -> f32 {
@@ -22,7 +25,7 @@ fn default_autosave() -> f32 {
 impl Default for Config {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        Config { wiki_root: home.join("wiki"), autosave_secs: default_autosave(), last_page: None, intro_done: false }
+        Config { wiki_root: home.join("wiki"), autosave_secs: default_autosave(), last_page: None, intro_done: false, dark_mode: None }
     }
 }
 

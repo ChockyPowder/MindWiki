@@ -27,6 +27,7 @@ cargo run --release -- ~/notes # use another folder
   ---
   ```
   Click a tag in the sidebar to filter the page list.
+- **Light and dark themes** (☀ / 🌙 in the top bar; follows the system until you pick one)
 - **Folders**: a title like `notes/Rust` is saved as `notes/Rust.md`
 - Autosave (2s after you stop typing; set it in ⚙ Settings), and pages changed
   by other programs reload automatically
@@ -39,6 +40,7 @@ cargo run --release -- ~/notes # use another folder
 | Ctrl+N | New page |
 | Ctrl+S | Save |
 | Ctrl+E | Toggle edit / preview |
+| Ctrl+B | Show / hide the sidebar |
 | Alt+← / Alt+→ | Back / forward |
 
 Settings are stored in `~/.config/mindwiki/config.toml`.

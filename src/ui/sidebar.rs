@@ -6,12 +6,21 @@ use egui::{Panel, RichText};
 impl WikiApp {
     pub(super) fn sidebar(&mut self, ui: &mut egui::Ui) {
         let mut go = None;
-        Panel::left("sidebar").resizable(true).default_size(230.0).show(ui, |ui| {
+        // Slides open and closed (☰ or Ctrl+B).
+        let mut open = self.sidebar_open;
+        let panel = Panel::left("sidebar").resizable(true).default_size(240.0).show_collapsible(ui, &mut open, |ui| {
             ui.add_space(4.0);
-            if ui.button("＋ New page").on_hover_text("Ctrl+N").clicked() {
+            let new_btn = egui::Button::new(RichText::new("＋ New page").strong())
+                .fill(super::theme::accent(ui).gamma_multiply(0.25))
+                .min_size(egui::vec2(ui.available_width(), 30.0));
+            if ui.add(new_btn).on_hover_text("Ctrl+N").clicked() {
                 self.dialog = Dialog::NewPage(String::new());
             }
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Filter pages…"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text("Filter pages…")
+                    .desired_width(f32::INFINITY),
+            );
             if let Some(tag) = self.tag_filter.clone() {
                 ui.horizontal(|ui| {
                     ui.label(format!("Tag: #{tag}"));
@@ -34,6 +43,8 @@ impl WikiApp {
             egui::ScrollArea::vertical().id_salt("pages").max_height(pages_h).auto_shrink([false, true]).show(
                 ui,
                 |ui| {
+                    // Full-width rows with left-aligned text.
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                     for (k, p) in &self.wiki.pages {
                         if !f.is_empty() && !p.title_lc.contains(&f) {
                             continue;
@@ -45,6 +56,7 @@ impl WikiApp {
                             go = Some(p.title.clone());
                         }
                     }
+                    });
                 },
             );
 
@@ -64,6 +76,8 @@ impl WikiApp {
                 });
             });
         });
+        self.sidebar_open = open;
+        self.rects.sidebar = panel.map(|p| p.response.rect);
         if let Some(t) = go {
             let ctx = ui.ctx().clone();
             self.navigate(&t, &ctx);

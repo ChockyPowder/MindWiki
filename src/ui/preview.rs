@@ -57,7 +57,18 @@ pub fn show(ui: &mut egui::Ui, cache: &mut CommonMarkCache, wiki: &Wiki, body: &
         cache.add_link_hook(d.clone());
     }
     egui::ScrollArea::vertical().id_salt("preview").auto_shrink([false, false]).show(ui, |ui| {
-        CommonMarkViewer::new().show(ui, cache, &md);
+        // Keep lines a comfortable reading width, centred in wide windows.
+        let avail = ui.available_width();
+        let col = (avail - 32.0).clamp(100.0, 780.0);
+        ui.horizontal_top(|ui| {
+            ui.add_space(((avail - col) / 2.0).max(0.0));
+            ui.vertical(|ui| {
+                ui.set_max_width(col);
+                ui.add_space(10.0);
+                CommonMarkViewer::new().show(ui, cache, &md);
+                ui.add_space(24.0);
+            });
+        });
     });
     let clicked = dests
         .iter()

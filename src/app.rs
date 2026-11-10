@@ -4,6 +4,8 @@
 use crate::config::Config;
 use crate::index::Index;
 use crate::page::key;
+use crate::remote::{self, Remote};
+use crate::sync::{self, Status, SyncHandle};
 use crate::store::Wiki;
 use egui_commonmark::CommonMarkCache;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -33,6 +35,10 @@ pub enum Dialog {
     Rename(String),
     Delete,
     Settings { root: String, autosave: f32 },
+    /// Log in to a server.
+    Connect { url: String, user: String, pass: String, fingerprint: String, error: Option<String> },
+    /// Details of the current server connection.
+    Remote,
 }
 
 pub struct WikiApp {
@@ -70,6 +76,12 @@ pub struct WikiApp {
     /// Where parts of the UI were drawn last frame; the tour highlights them.
     pub rects: Rects,
 
+    /// Background sync with the server, when connected.
+    sync: Option<SyncHandle>,
+    pub sync_status: Option<Status>,
+    /// A login attempt running in the background.
+    connect_rx: Option<Receiver<Result<Remote, String>>>,
+
     _watcher: Option<RecommendedWatcher>,
     rx: Receiver<PathBuf>,
 }
@@ -77,9 +89,10 @@ pub struct WikiApp {
 impl WikiApp {
     pub fn new(ctx: &egui::Context, config: Config) -> Self {
         crate::ui::theme::apply(ctx, config.dark_mode);
-        let (watcher, rx) = start_watcher(&config.wiki_root, ctx.clone());
+        let root = config.active_root();
+        let (watcher, rx) = start_watcher(&root, ctx.clone());
         let mut app = WikiApp {
-            wiki: Wiki { root: config.wiki_root.clone(), pages: BTreeMap::new() },
+            wiki: Wiki { root, pages: BTreeMap::new() },
             config,
             index: Index::default(),
             current: None,
@@ -103,22 +116,29 @@ impl WikiApp {
             md_cache: CommonMarkCache::default(),
             dialog: Dialog::None,
             status: None,
+            sync: None,
+            sync_status: None,
+            connect_rx: None,
             _watcher: watcher,
             rx,
         };
         app.load_wiki(ctx);
+        app.start_sync(ctx);
         if !app.config.intro_done {
             app.start_tour();
         }
         app
     }
 
-    /// (Re)opens the wiki folder from `config.wiki_root` and opens a start page.
+    /// (Re)opens the active wiki folder and opens a start page.
     fn load_wiki(&mut self, ctx: &egui::Context) {
-        let root = self.config.wiki_root.clone();
+        let root = self.config.active_root();
         match Wiki::open(&root) {
             Ok(mut w) => {
-                if let Err(e) = w.seed_if_empty() {
+                // A server's wiki gets its pages from the server instead.
+                if self.config.remote.is_none()
+                    && let Err(e) = w.seed_if_empty()
+                {
                     self.set_status(format!("Could not write Welcome page: {e}"));
                 }
                 self.wiki = w;
@@ -132,6 +152,13 @@ impl WikiApp {
         self.history.clear();
         self.hist_pos = 0;
         self.current = None;
+        self.buffer.clear();
+        self.dirty = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title("mindwiki".into()));
+        self.open_start_page(ctx);
+    }
+
+    fn open_start_page(&mut self, ctx: &egui::Context) {
         let start = self
             .config
             .last_page
@@ -144,8 +171,132 @@ impl WikiApp {
         }
     }
 
+    /// Switches to the folder `config.active_root()` now points at.
+    fn switch_root(&mut self, ctx: &egui::Context) {
+        self.sync = None;
+        self.sync_status = None;
+        self.config.last_page = None;
+        let (w, rx) = start_watcher(&self.config.active_root(), ctx.clone());
+        self._watcher = w;
+        self.rx = rx;
+        self.load_wiki(ctx);
+        self.start_sync(ctx);
+    }
+
+    // ---------- server connection ----------
+
+    pub fn connecting(&self) -> bool {
+        self.connect_rx.is_some()
+    }
+
+    fn start_sync(&mut self, ctx: &egui::Context) {
+        let Some(r) = &self.config.remote else { return };
+        match remote::Client::new(r) {
+            Ok(client) => {
+                let c = ctx.clone();
+                self.sync = Some(sync::spawn(self.config.active_root(), client, move || c.request_repaint()));
+                self.sync_status = Some(Status::Syncing);
+            }
+            Err(e) => self.sync_status = Some(Status::Offline(e)),
+        }
+    }
+
+    pub fn sync_now(&mut self) {
+        if let Some(s) = &self.sync {
+            s.sync_now();
+        }
+    }
+
+    /// Logs in on a background thread so the window doesn't freeze.
+    pub fn start_connect(&mut self, url: String, user: String, pass: String, fingerprint: String, ctx: &egui::Context) {
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(remote::connect(&url, &user, &pass, &fingerprint));
+            ctx.request_repaint();
+        });
+        self.connect_rx = Some(rx);
+    }
+
+    pub fn cancel_connect(&mut self) {
+        self.connect_rx = None;
+    }
+
+    pub fn poll_remote(&mut self, ctx: &egui::Context) {
+        // Result of a login attempt.
+        if let Some(rx) = &self.connect_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            self.connect_rx = None;
+            match result {
+                Ok(r) => {
+                    self.flush();
+                    self.set_status(format!("Connected as {}", r.username));
+                    self.config.remote = Some(r);
+                    self.dialog = Dialog::None;
+                    self.switch_root(ctx);
+                    self.config.save();
+                }
+                Err(e) => {
+                    if let Dialog::Connect { error, pass, .. } = &mut self.dialog {
+                        *error = Some(e);
+                        pass.clear();
+                    }
+                }
+            }
+        }
+        // News from the sync thread.
+        let mut latest = None;
+        if let Some(s) = &self.sync {
+            while let Ok(st) = s.status.try_recv() {
+                latest = Some(st);
+            }
+        }
+        if let Some(st) = latest {
+            match &st {
+                Status::Synced { conflicts, .. } if !conflicts.is_empty() => {
+                    self.set_status(format!("Edited in two places; your version was kept as “{}”", conflicts[0]));
+                }
+                Status::LoggedOut => {
+                    self.sync = None;
+                    if let Some(r) = &self.config.remote {
+                        self.dialog = Dialog::Connect {
+                            url: r.url.clone(),
+                            user: r.username.clone(),
+                            pass: String::new(),
+                            fingerprint: String::new(),
+                            error: Some("Your login has expired. Please log in again.".into()),
+                        };
+                    }
+                }
+                _ => {}
+            }
+            self.sync_status = Some(st);
+        }
+    }
+
+    /// Goes back to the local wiki. The downloaded copy stays on disk.
+    pub fn disconnect(&mut self, ctx: &egui::Context) {
+        self.flush();
+        self.sync = None;
+        if let Some(r) = self.config.remote.take() {
+            // Tell the server to forget the token; don't wait for it.
+            std::thread::spawn(move || {
+                if let Ok(c) = remote::Client::new(&r) {
+                    c.logout();
+                }
+            });
+        }
+        self.switch_root(ctx);
+        self.config.save();
+        self.set_status("Disconnected; showing your local wiki");
+    }
+
+    /// Call after any change to the pages: rebuilds backlinks and tags, and
+    /// asks the server sync (if connected) to run.
     pub fn reindex(&mut self) {
         self.index = Index::build(&self.wiki);
+        self.sync_now();
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -269,17 +420,16 @@ impl WikiApp {
         let root = PathBuf::from(shellexpand_home(root.trim()));
         if root != self.config.wiki_root {
             self.config.wiki_root = root;
-            self.config.last_page = None;
-            let (w, rx) = start_watcher(&self.config.wiki_root, ctx.clone());
-            self._watcher = w;
-            self.rx = rx;
-            self.load_wiki(ctx);
+            // While connected to a server the local folder isn't on screen.
+            if self.config.remote.is_none() {
+                self.switch_root(ctx);
+            }
         }
         self.config.save();
     }
 
     /// Applies changes made to the folder by other programs.
-    pub fn poll_watcher(&mut self) {
+    pub fn poll_watcher(&mut self, ctx: &egui::Context) {
         let mut changed_current = false;
         let mut any = false;
         while let Ok(path) = self.rx.try_recv() {
@@ -294,6 +444,11 @@ impl WikiApp {
             return;
         }
         self.reindex();
+        if self.current.is_none() {
+            // First pages arriving from a server.
+            self.open_start_page(ctx);
+            return;
+        }
         if changed_current {
             let cur = self.current.clone().unwrap();
             match self.wiki.get(&cur) {

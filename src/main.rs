@@ -1,13 +1,16 @@
 //! mindwiki — a personal desktop wiki. Pages are Markdown files in a folder.
 //!
 //! Usage: `mindwiki [WIKI_FOLDER]` (defaults to the folder in the config, `~/wiki`).
+//! The app can also connect to a `mindwiki-server` and sync a shared wiki.
 
 mod app;
 mod config;
 mod index;
 mod page;
+mod remote;
 mod search;
 mod store;
+mod sync;
 mod ui;
 
 fn main() -> eframe::Result {
@@ -15,9 +18,11 @@ fn main() -> eframe::Result {
     if let Some(dir) = std::env::args_os().nth(1) {
         let dir = std::path::PathBuf::from(dir);
         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        if dir != config.wiki_root {
+        // Opening a folder by hand means "use this local wiki".
+        if dir != config.wiki_root || config.remote.is_some() {
             config.wiki_root = dir;
             config.last_page = None;
+            config.remote = None;
         }
     }
 

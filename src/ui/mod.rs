@@ -7,12 +7,14 @@ pub mod theme;
 mod tour;
 
 use crate::app::{Dialog, Mode, WikiApp};
+use crate::sync::Status;
 use egui::{CentralPanel, Panel, RichText};
 
 impl eframe::App for WikiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.poll_watcher();
+        self.poll_remote(&ctx);
+        self.poll_watcher(&ctx);
         self.shortcuts(&ctx);
 
         self.top_bar(ui);
@@ -77,6 +79,29 @@ impl WikiApp {
                         self.dialog = Dialog::Settings {
                             root: self.config.wiki_root.display().to_string(),
                             autosave: self.config.autosave_secs,
+                        };
+                    }
+                    // Server connection: shows the sync state when connected.
+                    let (label, hover) = match (&self.config.remote, &self.sync_status) {
+                        (None, _) => ("☁".to_string(), "Connect to a mindwiki server".to_string()),
+                        (Some(_), Some(Status::Synced { read_only: true, .. })) => {
+                            ("☁ Read-only".into(), "Synced. Your account cannot change this wiki.".into())
+                        }
+                        (Some(_), Some(Status::Synced { .. })) => ("☁ Synced".into(), "All changes are saved on the server".into()),
+                        (Some(_), Some(Status::Offline(e))) => ("☁ Offline".into(), format!("{e}\nEdits are kept and sent when the server is back.")),
+                        (Some(_), Some(Status::LoggedOut)) => ("☁ Logged out".into(), "Click to log in again".into()),
+                        (Some(_), _) => ("☁ Syncing…".into(), "Talking to the server".into()),
+                    };
+                    if ui.button(label).on_hover_text(hover).clicked() {
+                        self.dialog = match &self.config.remote {
+                            Some(_) => Dialog::Remote,
+                            None => Dialog::Connect {
+                                url: String::new(),
+                                user: String::new(),
+                                pass: String::new(),
+                                fingerprint: String::new(),
+                                error: None,
+                            },
                         };
                     }
                     let search = ui.button("🔍 Search").on_hover_text("Ctrl+K");
@@ -212,6 +237,9 @@ impl WikiApp {
             return;
         }
         let mut close = false;
+        let mut keep_open = false;
+        let mut sync_now = false;
+        let busy = self.connecting();
         let mut action: Option<Box<dyn FnOnce(&mut WikiApp, &egui::Context)>> = None;
         let is_new = matches!(self.dialog, Dialog::NewPage(_));
         let modal = egui::Modal::new(egui::Id::unique("mindwiki-dialog")).show(ctx, |ui| {
@@ -253,6 +281,95 @@ impl WikiApp {
                         }
                     });
                 }
+                Dialog::Connect { url, user, pass, fingerprint, error } => {
+                    ui.heading("Connect to a server");
+                    ui.label(RichText::new("Share a wiki through a mindwiki server. Only https is allowed.").weak());
+                    ui.add_space(4.0);
+                    egui::Grid::new("connect").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
+                        ui.label("Server");
+                        ui.add(egui::TextEdit::singleline(url).hint_text("https://example.com:8443").desired_width(250.0));
+                        ui.end_row();
+                        ui.label("Username");
+                        ui.add(egui::TextEdit::singleline(user).desired_width(250.0));
+                        ui.end_row();
+                        ui.label("Password");
+                        ui.add(egui::TextEdit::singleline(pass).password(true).desired_width(250.0));
+                        ui.end_row();
+                        ui.label("Fingerprint");
+                        ui.add(egui::TextEdit::singleline(fingerprint).hint_text("only for self-signed servers").desired_width(250.0))
+                            .on_hover_text("A self-signed server prints this when it starts. Ask its admin for it.\nLeave empty for servers with a normal certificate.");
+                        ui.end_row();
+                    });
+                    if let Some(e) = error {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(e.as_str()).color(ui.visuals().error_fg_color));
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let go = ui.add_enabled(!busy, egui::Button::new("Log in")).clicked() || (enter && !busy);
+                        if go {
+                            *error = None;
+                            let (u, n, p, f) = (url.clone(), user.clone(), pass.clone(), fingerprint.clone());
+                            keep_open = true;
+                            action = Some(Box::new(move |a, c| a.start_connect(u, n, p, f, c)));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if busy {
+                            ui.spinner();
+                            ui.label("Logging in…");
+                        }
+                    });
+                }
+                Dialog::Remote => {
+                    ui.heading("Server connection");
+                    if let Some(r) = &self.config.remote {
+                        ui.label(format!("Connected to {}", r.url));
+                        ui.label(format!("Logged in as {}", r.username));
+                        if r.cert_pem.is_some() {
+                            ui.label(RichText::new("Self-signed certificate, checked by fingerprint").weak());
+                        }
+                    }
+                    ui.add_space(4.0);
+                    match &self.sync_status {
+                        Some(Status::Synced { read_only, not_uploaded, .. }) => {
+                            ui.label("Everything is synced.");
+                            if *read_only {
+                                ui.label("Your account is read-only.");
+                            }
+                            if *not_uploaded > 0 {
+                                ui.label(
+                                    RichText::new(format!("{not_uploaded} local change(s) stay on this computer only."))
+                                        .color(ui.visuals().warn_fg_color),
+                                );
+                            }
+                        }
+                        Some(Status::Offline(e)) => {
+                            ui.label(RichText::new(e.as_str()).color(ui.visuals().warn_fg_color));
+                            ui.label("Your edits are kept here and sent when the server is reachable.");
+                        }
+                        Some(Status::LoggedOut) => {
+                            ui.label("Your login has expired.");
+                        }
+                        _ => {
+                            ui.label("Syncing…");
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Sync now").clicked() {
+                            sync_now = true;
+                        }
+                        if ui.button("Disconnect").on_hover_text("Log out and go back to your local wiki").clicked() {
+                            action = Some(Box::new(|a, c| a.disconnect(c)));
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::Settings { root, autosave } => {
                     ui.heading("Settings");
                     ui.label("Wiki folder:");
@@ -273,10 +390,19 @@ impl WikiApp {
         if modal.should_close() {
             close = true;
         }
+        if sync_now {
+            self.sync_now();
+        }
         if let Some(f) = action {
-            self.dialog = Dialog::None;
+            if !keep_open {
+                self.dialog = Dialog::None;
+            }
             f(self, ctx);
         } else if close {
+            // Closing the login dialog also abandons a login in progress.
+            if matches!(self.dialog, Dialog::Connect { .. }) {
+                self.cancel_connect();
+            }
             self.dialog = Dialog::None;
         }
     }

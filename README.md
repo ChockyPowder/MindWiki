@@ -1,4 +1,5 @@
 # mindwiki
+## mindwiki is still in development to help us make this better and if you have any issues submit a issue or create a pull request with a fix
 
 A personal desktop wiki for storing things you know. Built with Rust + egui.
 Pages are plain Markdown files in a folder (default `~/wiki`), so you can also

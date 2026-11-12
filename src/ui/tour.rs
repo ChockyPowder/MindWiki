@@ -29,7 +29,7 @@ struct Step {
 const STEPS: &[Step] = &[
     Step {
         target: Target::None,
-        title: "Welcome to mindwiki",
+        title: "Welcome to mindwiki (note: still in development)",
         text: "This is your personal wiki: a place to write down things you know and link them together.\n\n\
                Every page is a plain Markdown file in your wiki folder, so your notes are never locked in.\n\n\
                This short tour shows the main parts. It takes about a minute.",
